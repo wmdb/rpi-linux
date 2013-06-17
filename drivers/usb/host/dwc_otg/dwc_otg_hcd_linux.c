@@ -272,6 +272,8 @@ static int _complete(dwc_otg_hcd_t * hcd, void *urb_handle,
 {
 	struct urb *urb = (struct urb *)urb_handle;
 	urb_tq_entry_t *new_entry;
+	dwc_irqflags_t irqflags;
+	int rc = 0;
 	if (CHK_DEBUG_LEVEL(DBG_HCDV | DBG_HCD_URB)) {
 		DWC_PRINTF("%s: urb %p, device %d, ep %d %s, status=%d\n",
 			   __func__, urb, usb_pipedevice(urb->pipe),
@@ -354,7 +356,9 @@ static int _complete(dwc_otg_hcd_t * hcd, void *urb_handle,
 		/* don't schedule the tasklet -
 		 * directly return the packet here with error. */
 #if USB_URB_EP_LINKING
+		DWC_SPINLOCK_IRQSAVE(hcd->lock, &irqflags);
 		usb_hcd_unlink_urb_from_ep(dwc_otg_hcd_to_hcd(hcd), urb);
+		DWC_SPINUNLOCK_IRQRESTORE(hcd->lock, irqflags);
 #endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 		usb_hcd_giveback_urb(dwc_otg_hcd_to_hcd(hcd), urb);
@@ -363,9 +367,19 @@ static int _complete(dwc_otg_hcd_t * hcd, void *urb_handle,
 #endif
 	} else {
 		new_entry->urb = urb;
-		DWC_TAILQ_INSERT_TAIL(&hcd->completed_urb_list, new_entry,
-					urb_tq_entries);
-		DWC_TASK_HI_SCHEDULE(hcd->completion_tasklet);
+		DWC_SPINLOCK_IRQSAVE(hcd->lock, &irqflags);
+#if USB_URB_EP_LINKING
+		rc = usb_hcd_check_unlink_urb(dwc_otg_hcd_to_hcd(hcd), urb, urb->status);
+		if( 0 == rc) {
+			usb_hcd_unlink_urb_from_ep(dwc_otg_hcd_to_hcd(hcd), urb);
+		}
+#endif
+		if( 0 == rc) {
+			DWC_TAILQ_INSERT_TAIL(&hcd->completed_urb_list, new_entry,
+						urb_tq_entries);
+			DWC_TASK_HI_SCHEDULE(hcd->completion_tasklet);
+		}
+		DWC_SPINUNLOCK_IRQRESTORE(hcd->lock, irqflags);
 	}
 	return 0;
 }
